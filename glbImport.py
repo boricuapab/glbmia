@@ -244,8 +244,8 @@ def _animation_data(glb):
         seen = set()
         for channel in animation['channels']:
             target = channel['target']
-            if target.get('path') not in ('translation', 'rotation', 'scale'):
-                raise ValueError('Only transform animation is supported')
+            if target.get('path') not in ('translation', 'rotation', 'scale', 'weights'):
+                raise ValueError('Unsupported animation target path')
             key = (target['node'], target['path'])
             if key in seen:
                 raise ValueError('Duplicate animation target')
@@ -257,6 +257,13 @@ def _animation_data(glb):
             times = [row[0] for row in glb.accessor(sampler['input'])]
             values = glb.accessor(sampler['output'])
             width = 4 if target['path'] == 'rotation' else 3
+            if target['path'] == 'weights':
+                node = glb.doc['nodes'][target['node']]
+                mesh = glb.doc['meshes'][node['mesh']]
+                width = len(mesh['primitives'][0].get('targets', []))
+                if not width or len(values) != len(times) * width or any(len(v) != 1 for v in values):
+                    raise ValueError('Invalid morph weight animation dimensions')
+                values = [tuple(v[0] for v in values[i:i+width]) for i in range(0, len(values), width)]
             if not times or len(times) != len(values) or any(len(v) != width for v in values):
                 raise ValueError('Invalid animation sampler dimensions')
             if times[0] < 0 or any(a >= b for a, b in zip(times, times[1:])):
@@ -316,7 +323,7 @@ def _import_animations(glb, root, node_map, clips, created):
         for (index, path) in sorted(targets):
             if index not in node_map:
                 raise ValueError('Animated node is outside the imported default scene')
-            if 'matrix' in glb.doc['nodes'][index]:
+            if path != 'weights' and 'matrix' in glb.doc['nodes'][index]:
                 raise ValueError('Animated nodes must use TRS, not matrix transforms')
             if (index, path) in channels:
                 _, interpolation, times, values = channels[index, path]
@@ -324,15 +331,20 @@ def _import_animations(glb, root, node_map, clips, created):
             else:
                 interpolation = 'STEP'
                 defaults = {'translation': [0, 0, 0], 'rotation': [0, 0, 0, 1], 'scale': [1, 1, 1]}
-                values = glb.doc['nodes'][index].get(path, defaults[path])
+                if path == 'weights':
+                    node = glb.doc['nodes'][index]
+                    mesh = glb.doc['meshes'][node['mesh']]
+                    count = len(mesh['primitives'][0].get('targets', []))
+                    values = node.get('weights', mesh.get('weights', [0.0] * count))
+                else:
+                    values = glb.doc['nodes'][index].get(path, defaults[path])
                 samples = _rotation_samples([0], [values], 'STEP', fps) if path == 'rotation' else [(0, values)]
             if samples[0][0] > 0:
                 samples.insert(0, (0, samples[0][1]))
             if samples[-1][0] < clip['duration']:
                 samples.append((clip['duration'], samples[-1][1]))
-            prefix = {'translation': 'translate', 'rotation': 'rotate', 'scale': 'scale'}[path]
-            for axis, suffix in enumerate('XYZ'):
-                key = node_map[index] + '.' + prefix + suffix
+            plugs = [node_map[index]+'.glbMorphWeight%d' % i for i in range(len(samples[0][1]))] if path == 'weights' else [node_map[index]+'.'+{'translation': 'translate', 'rotation': 'rotate', 'scale': 'scale'}[path]+suffix for suffix in 'XYZ']
+            for axis, key in enumerate(plugs):
                 data = curve_data.setdefault(key, {'path': path, 'times': [], 'values': [], 'tangents': []})
                 for t, value in samples:
                     # Local geometry/transforms use Maya's internal centimeters;
@@ -348,7 +360,7 @@ def _import_animations(glb, root, node_map, clips, created):
         selection = om.MSelectionList()
         selection.add(plug_name)
         fn = oma.MFnAnimCurve()
-        curve_type = {'translation': fn.kAnimCurveTL, 'rotation': fn.kAnimCurveTA, 'scale': fn.kAnimCurveTU}[data['path']]
+        curve_type = {'translation': fn.kAnimCurveTL, 'rotation': fn.kAnimCurveTA, 'scale': fn.kAnimCurveTU, 'weights': fn.kAnimCurveTU}[data['path']]
         obj = fn.create(selection.getPlug(0), curve_type)
         created.append(om.MFnDependencyNode(obj).name())
         # A file may mix step and linear clips on a channel.
@@ -430,10 +442,14 @@ def import_glb(path, texture_directory=None):
     doc = glb.doc
     # Preflight geometry before changing the scene.
     geometry = {}
+    morphs = {}
     for mi, mesh in enumerate(doc.get('meshes', [])):
+        target_counts = {len(p.get('targets', [])) for p in mesh['primitives']}
+        if len(target_counts) != 1:
+            raise ValueError('All mesh primitives must have the same morph target count')
         for pi, primitive in enumerate(mesh['primitives']):
-            if primitive.get('targets') or primitive.get('extensions'):
-                raise ValueError('Morph targets and primitive extensions are unsupported')
+            if primitive.get('extensions'):
+                raise ValueError('Primitive extensions are unsupported')
             attrs = primitive['attributes']
             points = glb.accessor(attrs['POSITION'])
             indices = [row[0] for row in glb.accessor(primitive['indices'])] if 'indices' in primitive else list(range(len(points)))
@@ -444,6 +460,22 @@ def import_glb(path, texture_directory=None):
             if any(len(values) != len(points) for values in extra.values()):
                 raise ValueError('Vertex attribute counts differ')
             geometry[mi, pi] = (points, indices, extra)
+            deltas = []
+            for target in primitive.get('targets', []):
+                if set(target) - {'POSITION', 'NORMAL'}:
+                    raise ValueError('Only POSITION and NORMAL morph attributes are supported')
+                decoded = {key: glb.accessor(value) for key, value in target.items()}
+                if any(len(rows) != len(points) or any(len(row) != 3 or any(not math.isfinite(v) for v in row) for row in rows) for rows in decoded.values()):
+                    raise ValueError('Invalid morph target vertex data')
+                deltas.append(decoded.get('POSITION', [(0.0, 0.0, 0.0)] * len(points)))
+            morphs[mi, pi] = deltas
+    for node in doc.get('nodes', []):
+        if 'mesh' in node:
+            mesh = doc['meshes'][node['mesh']]
+            count = len(mesh['primitives'][0].get('targets', []))
+            weights = node.get('weights', mesh.get('weights', [0.0] * count))
+            if len(weights) != count or any(not math.isfinite(v) for v in weights):
+                raise ValueError('Invalid default morph weights')
     if any('skin' in node for node in doc.get('nodes', [])):
         raise ValueError('Skinned meshes are unsupported; transform animation is supported')
     clips = _animation_data(glb)
@@ -484,6 +516,10 @@ def import_glb(path, texture_directory=None):
                 cmds.xform(transform, objectSpace=True, matrix=list(matrix.asMatrix()))
             if 'mesh' in node:
                 mi = node['mesh']
+                mesh = doc['meshes'][mi]
+                weights = node.get('weights', mesh.get('weights', [0.0] * len(mesh['primitives'][0].get('targets', []))))
+                for wi, weight in enumerate(weights):
+                    cmds.addAttr(transform, longName='glbMorphWeight%d' % wi, attributeType='double', keyable=True, defaultValue=weight)
                 for pi, primitive in enumerate(doc['meshes'][mi]['primitives']):
                     points, indices, extra = geometry[mi, pi]
                     selection = om.MSelectionList()
@@ -507,6 +543,24 @@ def import_glb(path, texture_directory=None):
                         cmds.setAttr(shape + '.displayColors', any(any(abs(c - 1) > 1e-6 for c in row[:3]) for row in extra['COLOR_0']))
                     cmds.setAttr(shape + '.doubleSided', doc.get('materials', [{}])[primitive['material']].get('doubleSided', False) if 'material' in primitive else False)
                     cmds.sets(shape, edit=True, forceElement=materials[primitive['material']] if 'material' in primitive else 'initialShadingGroup')
+                    if morphs[mi, pi]:
+                        # Native blend shapes retain target deltas after temporary target meshes are removed.
+                        cmds.polyNormalPerVertex(shape, unFreezeNormal=True)
+                        blend = cmds.blendShape(shape, origin='local', name=_name(node.get('name', 'glbMesh'))+'_Morphs')[0]
+                        created_materials.append(blend)
+                        cmds.setAttr(blend+'.supportNegativeWeights', True)
+                        for wi, delta in enumerate(morphs[mi, pi]):
+                            temporary = cmds.createNode('transform', name='glbMorphTemporary')
+                            try:
+                                sel = om.MSelectionList(); sel.add(temporary)
+                                target_fn = om.MFnMesh()
+                                target_fn.create(om.MPointArray([om.MPoint(*(p[a]+d[a] for a in range(3))) for p,d in zip(points, delta)]), [3]*(len(indices)//3), indices, parent=sel.getDependNode(0))
+                                cmds.blendShape(blend, edit=True, target=(shape, wi, temporary, 1.0))
+                            finally:
+                                cmds.delete(temporary)
+                            cmds.connectAttr(transform+'.glbMorphWeight%d' % wi, blend+'.weight[%d]' % wi)
+                        if any('NORMAL' in target for target in primitive['targets']):
+                            om.MGlobal.displayWarning('GLB morph normals are recalculated from deformed geometry; supplied NORMAL deltas are not imported.')
             for child in node.get('children', []):
                 visit(child, transform, ancestors | {index})
         scenes = doc.get('scenes', [])
@@ -607,7 +661,7 @@ class GLBTranslator(ompx.MPxFileTranslator):
 
 
 def initializePlugin(plugin):
-    ompx.MFnPlugin(plugin, 'GLB Import/Export', '1.3.0', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
+    ompx.MFnPlugin(plugin, 'GLB Import/Export', '1.3.1', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
     if not cmds.about(batch=True):
         menu = cmds.menu('glbImporterMenu', label='GLB', parent='MayaWindow', tearOff=True)
         cmds.menuItem(label='Animation Clips...', parent=menu,

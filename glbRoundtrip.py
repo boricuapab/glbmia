@@ -52,6 +52,8 @@ def export_imported_glb(path, root=None):
         raise ValueError('The export root must be a GLB import group')
     source_path = cmds.getAttr(root+'.glbSource')
     source = GLB(source_path)
+    if any(p.get('targets') for m in source.doc.get('meshes', []) for p in m['primitives']):
+        raise ValueError('Animated morph roundtrip export is not supported; refusing to drop morph animation')
     doc = json.loads(json.dumps(source.doc))
     if len(source.buffers) != 1:
         raise ValueError('Round-trip export requires a single GLB buffer')

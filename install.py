@@ -23,7 +23,7 @@ def install(destination=None, load=True):
     for name in FILES:
         shutil.copy2(str(source / name), str(plugin_dir / name))
     (destination / 'glbmia.mod').write_text(
-        '+ glbmia 1.3.0 ./glbmia\nPYTHONPATH +:= plug-ins\n', encoding='utf-8')
+        '+ glbmia 1.3.1 ./glbmia\nPYTHONPATH +:= plug-ins\n', encoding='utf-8')
     if load:
         import sys
         if str(plugin_dir) not in sys.path:

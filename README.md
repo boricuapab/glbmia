@@ -22,11 +22,13 @@ Use **File > Import > glTF Binary**. Supports GLB 2.0 triangle geometry, hierarc
 
 STEP and LINEAR transform animations become Maya animation curves. All clips receive consecutive named frame ranges; choose them under **GLB > Animation Clips...**. Quaternion LINEAR rotation is sampled, so interpolation between samples is approximate.
 
-Textures are extracted beside the input into `<filename>_textures`; keep this folder and the source GLB available. Skins, morph targets, CUBICSPLINE and unsupported required extensions (including Draco/Meshopt) are rejected. Cameras/lights and occlusion maps are not imported. Vertex color rendering depends on the renderer.
+Textures are extracted beside the input into `<filename>_textures`; keep this folder and the source GLB available. Skins, CUBICSPLINE and unsupported required extensions (including Draco/Meshopt) are rejected. Cameras/lights and occlusion maps are not imported. Vertex color rendering depends on the renderer.
+
+Morph POSITION targets and STEP/LINEAR weight animations import as native Maya blend shapes. Node weights override mesh defaults. Supplied morph NORMAL deltas are validated but normals are recalculated from the deformed geometry; tangent and other morph attributes are rejected.
 
 ## Export with animations
 
-Select an imported GLB group and use **GLB > Export Imported GLB with Animations...**. This verifies the live scene against its original GLB, preserves the original geometry, normals, vertex colors, UVs, textures, hierarchy and animation clips, and applies supported live material changes such as opacity. Keep the original GLB available. Geometry, rig and animation changes that cannot be faithfully preserved cause an explicit error. Skinned scenes are rejected. This is a verified imported-asset roundtrip, not a general Maya animation or skeleton exporter.
+Select an imported GLB group and use **GLB > Export Imported GLB with Animations...**. This verifies the live scene against its original GLB, preserves the original geometry, normals, vertex colors, UVs, textures, hierarchy and animation clips, and applies supported live material changes such as opacity. Keep the original GLB available. Geometry, rig and animation changes that cannot be faithfully preserved cause an explicit error. Skinned scenes and animated morph roundtrips are rejected. This is a verified imported-asset roundtrip, not a general Maya animation or skeleton exporter.
 
 ```python
 import glbImport
