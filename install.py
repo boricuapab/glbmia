@@ -28,7 +28,7 @@ def install(destination=None, load=True, notify=True):
         target = package/name
         target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(str(source/name),str(target))
-    (destination/'glbformaya.mod').write_text('+ glbformaya 1.4.1 ./glbformaya\n',encoding='utf-8')
+    (destination/'glbformaya.mod').write_text('+ glbformaya 1.4.2 ./glbformaya\n',encoding='utf-8')
     # Archive only recognized files from our old layout, outside plug-in search folders.
     legacy_dirs = [destination/'glbmia'/'plug-ins']
     if load:

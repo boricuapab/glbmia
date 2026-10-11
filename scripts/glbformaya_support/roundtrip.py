@@ -16,8 +16,6 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 
-from glbformaya import GLB, _name
-
 
 def _close(actual, expected, tolerance=2e-5):
     return len(actual) == len(expected) and all(abs(a-b) <= tolerance for a,b in zip(actual, expected))
@@ -41,7 +39,7 @@ def _curve(node, attribute):
     return oma.MFnAnimCurve(selection.getDependNode(0))
 
 
-def export_imported_glb(path, root=None):
+def export_imported_glb(path, root=None, glb_reader=None, name_function=None):
     """Verify the imported scene then export its original data plus live materials."""
     if root is None:
         roots = [n for n in cmds.ls(type='transform', long=True) if cmds.attributeQuery('glbSource', node=n, exists=True)]
@@ -52,7 +50,9 @@ def export_imported_glb(path, root=None):
     if not cmds.attributeQuery('glbSource', node=root, exists=True):
         raise ValueError('The export root must be a GLB import group')
     source_path = cmds.getAttr(root+'.glbSource')
-    source = GLB(source_path)
+    if glb_reader is None or name_function is None:
+        raise ValueError('Call export_imported_glb through the glbformaya plug-in API')
+    source = glb_reader(source_path)
     doc = json.loads(json.dumps(source.doc))
     if len(source.buffers) != 1:
         raise ValueError('Round-trip export requires a single GLB buffer')
@@ -74,7 +74,7 @@ def export_imported_glb(path, root=None):
 
     def visit(index, parent):
         node = nodes[index]
-        candidates = [n for n in cmds.listRelatives(parent, children=True, fullPath=True, type='transform') or [] if n.split('|')[-1] == _name(node.get('name', 'glbNode_%d' % index))]
+        candidates = [n for n in cmds.listRelatives(parent, children=True, fullPath=True, type='transform') or [] if n.split('|')[-1] == name_function(node.get('name', 'glbNode_%d' % index))]
         if len(candidates) != 1:
             raise ValueError('Imported node renamed/missing: '+node.get('name', str(index)))
         transform = candidates[0]; node_map[index] = transform
@@ -103,7 +103,7 @@ def export_imported_glb(path, root=None):
         if len(shapes) != len(primitives):
             raise ValueError('Imported mesh primitive count changed: '+transform)
         # Importer names shapes with a deterministic per-transform numeric suffix.
-        prefix = _name(node.get('name','glbMesh'))+'Shape'
+        prefix = name_function(node.get('name','glbMesh'))+'Shape'
         shapes.sort(key=lambda n: 0 if n.split('|')[-1] == prefix else int(n.split('|')[-1][len(prefix):]))
         for shape, primitive in zip(shapes, primitives):
             fn = _fn(shape); attrs = primitive['attributes']

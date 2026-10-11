@@ -49,6 +49,12 @@ with tempfile.TemporaryDirectory() as temporary:
             points = om.MFnMesh(selection.getDagPath(0)).getPoints()
             assert all(abs(p.z-expected)<1e-5 for p in points), (frame,expected,points)
     del glbformaya.__file__
+    sys.modules.pop('glbformaya', None)
+    plugin_folder = str(Path(__file__).resolve().parent/'plug-ins')
+    sys.path[:] = [p for p in sys.path if p != plugin_folder]
+    for name in list(sys.modules):
+        if name.startswith('glbformaya_support'):
+            del sys.modules[name]
     result = glbformaya.export_imported_glb(str(Path(temporary)/'out.glb'),root)
     exported = glbformaya.GLB(result['path'])
     assert exported.buffers == glbformaya.GLB(str(path)).buffers

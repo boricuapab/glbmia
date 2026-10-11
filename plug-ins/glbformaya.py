@@ -596,7 +596,7 @@ def export_imported_glb(path, root=None):
     """Preserve a verified imported GLB's animations and source mesh data."""
     _support_path()
     from glbformaya_support import roundtrip
-    return roundtrip.export_imported_glb(path, root)
+    return roundtrip.export_imported_glb(path, root, glb_reader=GLB, name_function=_name)
 
 
 
@@ -673,7 +673,7 @@ class GLBTranslator(ompx.MPxFileTranslator):
 
 
 def initializePlugin(plugin):
-    ompx.MFnPlugin(plugin, 'glbformaya', '1.4.1', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
+    ompx.MFnPlugin(plugin, 'glbformaya', '1.4.2', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
     if not cmds.about(batch=True):
         menu = cmds.menu('glbImporterMenu', label='glbformaya', parent='MayaWindow', tearOff=True)
         cmds.menuItem(label='Animation Clips...', parent=menu,
