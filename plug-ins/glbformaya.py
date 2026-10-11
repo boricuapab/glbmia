@@ -580,22 +580,23 @@ def import_glb(path, texture_directory=None):
 
 def export_glb(path, selected=True, pyrite64=True):
     """Export static native Maya meshes; Pyrite64 mode emits Fast64 material extras."""
-    plugin_file = globals().get('__file__', sys._getframe().f_code.co_filename)
-    filename = os.path.join(os.path.dirname(os.path.abspath(plugin_file)), 'glbExport.py')
-    spec = importlib.util.spec_from_file_location('_native_maya_glb_export', filename)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.export_glb(path, selected, pyrite64)
+    _support_path()
+    from glbformaya_support import static_export
+    return static_export.export_glb(path, selected, pyrite64)
 
+
+def _support_path():
+    scripts = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
 
 
 def export_imported_glb(path, root=None):
     """Preserve a verified imported GLB's animations and source mesh data."""
-    folder = os.path.dirname(os.path.abspath(__file__))
-    if folder not in sys.path:
-        sys.path.insert(0, folder)
-    import glbRoundtrip
-    return glbRoundtrip.export_imported_glb(path, root)
+    _support_path()
+    from glbformaya_support import roundtrip
+    return roundtrip.export_imported_glb(path, root)
+
 
 
 def show_roundtrip_dialog(*_):
@@ -661,9 +662,9 @@ class GLBTranslator(ompx.MPxFileTranslator):
 
 
 def initializePlugin(plugin):
-    ompx.MFnPlugin(plugin, 'GLB Import/Export', '1.3.1', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
+    ompx.MFnPlugin(plugin, 'glbformaya', '1.4.0', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
     if not cmds.about(batch=True):
-        menu = cmds.menu('glbImporterMenu', label='GLB', parent='MayaWindow', tearOff=True)
+        menu = cmds.menu('glbImporterMenu', label='glbformaya', parent='MayaWindow', tearOff=True)
         cmds.menuItem(label='Animation Clips...', parent=menu,
                       command=lambda *args: show_animation_clips())
         cmds.menuItem(label='Export Imported GLB with Animations...', parent=menu, command=show_roundtrip_dialog)

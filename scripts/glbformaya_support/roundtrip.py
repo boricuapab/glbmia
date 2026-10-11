@@ -15,7 +15,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 
-from glbImport import GLB, _name
+from glbformaya import GLB, _name
 
 
 def _close(actual, expected, tolerance=2e-5):
