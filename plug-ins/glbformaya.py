@@ -94,7 +94,7 @@ class GLB:
         if index in self._accessors:
             return self._accessors[index]
         a = self.doc['accessors'][index]
-        widths = {'SCALAR': 1, 'VEC2': 2, 'VEC3': 3, 'VEC4': 4}
+        widths = {'SCALAR': 1, 'VEC2': 2, 'VEC3': 3, 'VEC4': 4, 'MAT4': 16}
         if a['type'] not in widths:
             raise ValueError('Unsupported accessor type: ' + a['type'])
         width = widths[a['type']]
@@ -135,11 +135,12 @@ class GLB:
 
 
 def _texture(glb, info, directory, created, color=True):
-    if info.get('texCoord', 0) != 0 or info.get('extensions'):
-        raise ValueError('Only UV0 textures without texture extensions are supported')
+    if info.get('extensions'):
+        raise ValueError('Texture extensions are unsupported')
     texture = glb.doc['textures'][info['index']]
     file_node = cmds.shadingNode('file', asTexture=True, name='glbTexture')
     created.append(file_node)
+    cmds.addAttr(file_node,longName='glbTexCoord',attributeType='long',defaultValue=info.get('texCoord',0))
     cmds.setAttr(file_node + '.ignoreColorSpaceFileRules', True)
     cmds.setAttr(file_node + '.fileTextureName', glb.image_path(texture['source'], directory), type='string')
     cmds.setAttr(file_node + '.colorSpace', 'sRGB' if color else 'Raw', type='string')
@@ -357,6 +358,15 @@ def _import_animations(glb, root, node_map, clips, created):
                 data['tangents'][-1] = oma.MFnAnimCurve.kTangentStep
         start = math.ceil(end) + 1
     for plug_name, data in curve_data.items():
+        # Source float timestamps can coincide with baked frame samples at Maya's
+        # 6000-tick time resolution. Merge before indexing curve tangents.
+        unique = {}
+        for t,v,tangent in zip(data['times'],data['values'],data['tangents']):
+            unique[round(t.asUnits(om.MTime.k6000FPS))] = (v,tangent)
+        ticks = sorted(unique)
+        data['times'] = [om.MTime(t,om.MTime.k6000FPS) for t in ticks]
+        data['values'] = [unique[t][0] for t in ticks]
+        data['tangents'] = [unique[t][1] for t in ticks]
         selection = om.MSelectionList()
         selection.add(plug_name)
         fn = oma.MFnAnimCurve()
@@ -456,7 +466,7 @@ def import_glb(path, texture_directory=None):
             indices = _triangles(indices, primitive.get('mode', 4))
             if not indices or any(i < 0 or i >= len(points) for i in indices):
                 raise ValueError('Invalid or empty mesh indices')
-            extra = {key: glb.accessor(value) for key, value in attrs.items() if key in ('NORMAL', 'TEXCOORD_0', 'COLOR_0')}
+            extra = {key: glb.accessor(value) for key, value in attrs.items() if key in ('NORMAL', 'COLOR_0') or key.startswith('TEXCOORD_')}
             if any(len(values) != len(points) for values in extra.values()):
                 raise ValueError('Vertex attribute counts differ')
             geometry[mi, pi] = (points, indices, extra)
@@ -476,8 +486,9 @@ def import_glb(path, texture_directory=None):
             weights = node.get('weights', mesh.get('weights', [0.0] * count))
             if len(weights) != count or any(not math.isfinite(v) for v in weights):
                 raise ValueError('Invalid default morph weights')
-    if any('skin' in node for node in doc.get('nodes', [])):
-        raise ValueError('Skinned meshes are unsupported; transform animation is supported')
+    _support_path()
+    from glbformaya_support import skin
+    skin.preflight(glb)
     clips = _animation_data(glb)
     texture_directory = texture_directory or os.path.splitext(glb.path)[0] + '_textures'
     root = cmds.createNode('transform', name=_name(os.path.splitext(os.path.basename(path))[0]) + '_GLB')
@@ -494,11 +505,15 @@ def import_glb(path, texture_directory=None):
             materials.append(_material(glb, material, i, texture_directory, created_materials))
         nodes = doc.get('nodes', [])
         node_map = {}
+        shape_map = {}
+        joint_indices = {i for s in doc.get('skins', []) for i in s['joints']}
         def visit(index, parent, ancestors):
             if index in ancestors:
                 raise ValueError('Cycle in GLB node hierarchy')
             node = nodes[index]
-            transform = cmds.createNode('transform', name=_name(node.get('name', 'glbNode_%d' % index)), parent=parent)
+            transform = cmds.createNode('joint' if index in joint_indices else 'transform', name=_name(node.get('name', 'glbNode_%d' % index)), parent=parent)
+            if index in joint_indices:
+                cmds.setAttr(transform+'.segmentScaleCompensate', False)
             transform = cmds.ls(transform, long=True)[0]
             if index in node_map:
                 raise ValueError('A GLB node cannot have multiple parents')
@@ -535,6 +550,12 @@ def import_glb(path, texture_directory=None):
                         uv = extra['TEXCOORD_0']
                         fn.setUVs([row[0] for row in uv], [1 - row[1] for row in uv])
                         fn.assignUVs([3] * (len(indices) // 3), indices)
+                    for key in sorted(extra):
+                        if not key.startswith('TEXCOORD_') or key == 'TEXCOORD_0': continue
+                        uv = extra[key]; uvset = 'glbUV'+key.split('_')[-1]
+                        fn.createUVSet(uvset)
+                        fn.setUVs([r[0] for r in uv],[1-r[1] for r in uv],uvset)
+                        fn.assignUVs([3]*(len(indices)//3),indices,uvset)
                     if 'COLOR_0' in extra:
                         colors = [om.MColor(tuple(row) if len(row) == 4 else tuple(row) + (1.,)) for row in extra['COLOR_0']]
                         fn.setVertexColors(colors, list(range(len(points))))
@@ -543,6 +564,15 @@ def import_glb(path, texture_directory=None):
                         cmds.setAttr(shape + '.displayColors', any(any(abs(c - 1) > 1e-6 for c in row[:3]) for row in extra['COLOR_0']))
                     cmds.setAttr(shape + '.doubleSided', doc.get('materials', [{}])[primitive['material']].get('doubleSided', False) if 'material' in primitive else False)
                     cmds.sets(shape, edit=True, forceElement=materials[primitive['material']] if 'material' in primitive else 'initialShadingGroup')
+                    if 'material' in primitive:
+                        for file_node in cmds.ls(cmds.listHistory(materials[primitive['material']]) or [],type='file'):
+                            coord = cmds.getAttr(file_node+'.glbTexCoord') if cmds.attributeQuery('glbTexCoord',node=file_node,exists=True) else 0
+                            if 'TEXCOORD_%d' % coord not in extra:
+                                raise ValueError('Texture references a missing UV set')
+                            uvset = 'map1' if coord == 0 else 'glbUV%d' % coord
+                            names = fn.getUVSetNames(); uv_index = names.index(uvset)
+                            cmds.uvLink(texture=file_node,uvSet=shape+'.uvSet[%d].uvSetName' % uv_index)
+                    shape_map[index, pi] = shape
                     if morphs[mi, pi]:
                         # Native blend shapes retain target deltas after temporary target meshes are removed.
                         cmds.polyNormalPerVertex(shape, unFreezeNormal=True)
@@ -567,14 +597,16 @@ def import_glb(path, texture_directory=None):
         roots = scenes[doc.get('scene', 0)].get('nodes', []) if scenes else [i for i in range(len(nodes)) if i not in {c for n in nodes for c in n.get('children', [])}]
         for index in roots:
             visit(index, root, set())
+        skin.bind_skins(glb, root, node_map, shape_map, created_materials)
         _import_animations(glb, root, node_map, clips, created_materials)
         cmds.select(root, replace=True)
         om.MGlobal.displayInfo('Imported GLB: ' + glb.path)
         return root
     except Exception:
         cmds.delete(root)
-        if created_materials:
-            cmds.delete(created_materials)
+        remaining = [n for n in created_materials if cmds.objExists(n)]
+        if remaining:
+            cmds.delete(remaining)
         raise
 
 
@@ -673,7 +705,7 @@ class GLBTranslator(ompx.MPxFileTranslator):
 
 
 def initializePlugin(plugin):
-    ompx.MFnPlugin(plugin, 'glbformaya', '1.4.2', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
+    ompx.MFnPlugin(plugin, 'glbformaya', '1.5.0', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
     if not cmds.about(batch=True):
         menu = cmds.menu('glbImporterMenu', label='glbformaya', parent='MayaWindow', tearOff=True)
         cmds.menuItem(label='Animation Clips...', parent=menu,

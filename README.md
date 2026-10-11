@@ -18,13 +18,15 @@ Manage **Loaded** and **Auto load** under **Windows > Settings/Preferences > Plu
 
 ## Import
 
-Use **File > Import > glTF Binary**. Supports GLB 2.0 triangle geometry, hierarchy, transforms, normals, UV0, vertex colors, sparse/interleaved accessors, PNG/JPEG textures, PBR factors, alpha modes and unlit materials. Converts glTF metres to Maya centimetres and adapts to the scene up axis.
+Use **File > Import > glTF Binary**. Supports GLB 2.0 triangle geometry, hierarchy, transforms, normals, multiple UV sets, vertex colors, sparse/interleaved accessors, PNG/JPEG textures, PBR factors, alpha modes and unlit materials. Converts glTF metres to Maya centimetres and adapts to the scene up axis.
 
 STEP and LINEAR transform animations become Maya animation curves. All clips receive consecutive named frame ranges; choose them under **glbformaya > Animation Clips...**. Quaternion LINEAR rotation is sampled, so interpolation between samples is approximate.
 
-Textures are extracted beside the input into `<filename>_textures`; keep this folder and the source GLB available. Skins, CUBICSPLINE and unsupported required extensions (including Draco/Meshopt) are rejected. Cameras/lights and occlusion maps are not imported. Vertex color rendering depends on the renderer.
+Textures are extracted beside the input into `<filename>_textures`; keep this folder and the source GLB available. CUBICSPLINE and unsupported required extensions (including Draco/Meshopt) are rejected. Cameras/lights and occlusion maps are not imported. Vertex color rendering depends on the renderer.
 
 Morph POSITION targets and STEP/LINEAR weight animations import as native Maya blend shapes. Node weights override mesh defaults. Supplied morph NORMAL deltas are validated but normals are recalculated from the deformed geometry; tangent and other morph attributes are rejected.
+
+Skinned meshes import as native Maya joints and skinClusters, preserving inverse bind matrices and up to four influences per vertex. Joint scale inheritance follows glTF. Materials are linked to their requested UV sets. Animation timestamps that coincide at Maya tick resolution are merged before curves are created.
 
 ## Export with animations
 
