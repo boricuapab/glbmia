@@ -586,7 +586,8 @@ def export_glb(path, selected=True, pyrite64=True):
 
 
 def _support_path():
-    scripts = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    filename = globals().get('__file__', _support_path.__code__.co_filename)
+    scripts = os.path.abspath(os.path.join(os.path.dirname(filename), '..', 'scripts'))
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
 
@@ -658,11 +659,21 @@ class GLBTranslator(ompx.MPxFileTranslator):
 
     def writer(self, file_object, options, access_mode):
         selected = access_mode == self.kExportActiveAccessMode
-        export_glb(file_object.resolvedFullName(), selected=selected, pyrite64=True)
+        roots = [n for n in cmds.ls(type='transform', long=True) if cmds.attributeQuery('glbSource', node=n, exists=True)]
+        selection = cmds.ls(selection=True, long=True) or []
+        chosen = [r for r in roots if not selected or any(s == r or s.startswith(r+'|') for s in selection)]
+        if len(chosen) == 1 and (cmds.attributeQuery('glbAnimationClips', node=chosen[0], exists=True) or cmds.ls(chosen[0],dag=True,type='mesh')):
+            if selected and any(s != chosen[0] for s in selection):
+                raise ValueError('Select the entire imported GLB group to preserve its animation')
+            export_imported_glb(file_object.resolvedFullName(), chosen[0])
+        elif chosen:
+            raise ValueError('Select one imported GLB group for export')
+        else:
+            export_glb(file_object.resolvedFullName(), selected=selected, pyrite64=True)
 
 
 def initializePlugin(plugin):
-    ompx.MFnPlugin(plugin, 'glbformaya', '1.4.0', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
+    ompx.MFnPlugin(plugin, 'glbformaya', '1.4.1', 'Any').registerFileTranslator('glTF Binary', None, GLBTranslator.creator)
     if not cmds.about(batch=True):
         menu = cmds.menu('glbImporterMenu', label='glbformaya', parent='MayaWindow', tearOff=True)
         cmds.menuItem(label='Animation Clips...', parent=menu,

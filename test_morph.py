@@ -10,6 +10,7 @@ import maya.api.OpenMaya as om
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent/'plug-ins'))
 import glbformaya
+cmds.loadPlugin(str(Path(__file__).resolve().parent/'plug-ins/glbformaya.py'))
 
 binary = bytearray(); views = []; accessors = []
 def accessor(rows, kind):
@@ -47,10 +48,21 @@ with tempfile.TemporaryDirectory() as temporary:
             selection = om.MSelectionList(); selection.add(shape)
             points = om.MFnMesh(selection.getDagPath(0)).getPoints()
             assert all(abs(p.z-expected)<1e-5 for p in points), (frame,expected,points)
+    del glbformaya.__file__
+    result = glbformaya.export_imported_glb(str(Path(temporary)/'out.glb'),root)
+    exported = glbformaya.GLB(result['path'])
+    assert exported.buffers == glbformaya.GLB(str(path)).buffers
+    assert exported.doc['animations'] == doc['animations']
+    cmds.select(root)
+    via_file = str(Path(temporary)/'file-export.glb')
+    cmds.file(via_file,exportSelected=True,type='glTF Binary',force=True)
+    assert glbformaya.GLB(via_file).doc['animations'] == doc['animations']
+    node = cmds.listRelatives(root,children=True,fullPath=True,type='transform')[0]
+    cmds.setKeyframe(node+'.glbMorphWeight0',time=1,value=0.123)
     try:
-        glbformaya.export_imported_glb(str(Path(temporary)/'out.glb'),root)
-    except ValueError as error:
-        assert 'morph' in str(error)
+        glbformaya.export_imported_glb(str(Path(temporary)/'edited.glb'),root)
+    except ValueError:
+        pass
     else:
-        raise AssertionError('Morph roundtrip must refuse unsupported export')
-print('PASS: multi-primitive morphs, negative and >1 weights, LINEAR/STEP clips, export guard')
+        raise AssertionError('Edited animation must not be silently replaced by source data')
+print('PASS: native morphs, STEP/LINEAR weights, source-preserving animated export without __file__')

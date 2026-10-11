@@ -28,7 +28,7 @@ Morph POSITION targets and STEP/LINEAR weight animations import as native Maya b
 
 ## Export with animations
 
-Select an imported GLB group and use **glbformaya > Export Imported GLB with Animations...**. This verifies the live scene against its original GLB, preserves the original geometry, normals, vertex colors, UVs, textures, hierarchy and animation clips, and applies supported live material changes such as opacity. Keep the original GLB available. Geometry, rig and animation changes that cannot be faithfully preserved cause an explicit error. Skinned scenes and animated morph roundtrips are rejected. This is a verified imported-asset roundtrip, not a general Maya animation or skeleton exporter.
+Select an imported GLB group and use **glbformaya > Export Imported GLB with Animations...**. This verifies the live scene against its original GLB, preserves the original geometry, normals, vertex colors, UVs, textures, hierarchy and animation clips, and applies supported live material changes such as opacity. Keep the original GLB available. Geometry, rig and animation changes that cannot be faithfully preserved cause an explicit error. Skinned scenes are rejected. Morph POSITION targets and STEP/LINEAR weight animation can be preserved after verifying native blend shapes and their animation against the source. Original NORMAL deltas are retained in the GLB. Transform animation verification currently supports STEP clips. This is a verified imported-asset roundtrip, not a general Maya animation or skeleton exporter.
 
 ```python
 import glbformaya
@@ -37,7 +37,7 @@ glbformaya.export_imported_glb('/path/to/new-output.glb', root='model_GLB')
 
 ## Static mesh export
 
-**File > Export Selection > glTF Binary** and **glbformaya > Export Selected for Pyrite64...** export static meshes, including triangulation, materials, normals, UV seams and face-vertex colors. They do not export animations or skeletons. Pyrite64 mode supports native Fast64 material properties and writes external PNG companions. Copy those images with the GLB. Generic export embeds images:
+**File > Export Selection > glTF Binary** and **glbformaya > Export Selected for Pyrite64...** export static meshes, including triangulation, materials, normals, UV seams and face-vertex colors. When selecting an entire imported GLB group, File > Export Selection automatically uses the verified animation-preserving roundtrip. The explicit Pyrite64 menu remains static; ordinary Maya mesh export does not export animations or skeletons. Pyrite64 mode supports native Fast64 material properties and writes external PNG companions. Copy those images with the GLB. Generic export embeds images:
 
 ```python
 import glbformaya

@@ -10,6 +10,7 @@ import math
 import os
 import struct
 import tempfile
+import re
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -52,8 +53,6 @@ def export_imported_glb(path, root=None):
         raise ValueError('The export root must be a GLB import group')
     source_path = cmds.getAttr(root+'.glbSource')
     source = GLB(source_path)
-    if any(p.get('targets') for m in source.doc.get('meshes', []) for p in m['primitives']):
-        raise ValueError('Animated morph roundtrip export is not supported; refusing to drop morph animation')
     doc = json.loads(json.dumps(source.doc))
     if len(source.buffers) != 1:
         raise ValueError('Round-trip export requires a single GLB buffer')
@@ -109,7 +108,44 @@ def export_imported_glb(path, root=None):
         for shape, primitive in zip(shapes, primitives):
             fn = _fn(shape); attrs = primitive['attributes']
             positions = source.accessor(attrs['POSITION'])
-            if fn.numVertices != len(positions) or any(not _close(tuple(p)[:3], v) for p,v in zip(fn.getPoints(), positions)):
+            morph = primitive.get('targets', [])
+            if morph:
+                blends = cmds.ls(cmds.listHistory(shape) or [], type='blendShape')
+                # Follow the blend's actual input rather than relying on intermediate names.
+                if len(blends) != 1:
+                    raise ValueError('Morph deformer stack changed: '+shape)
+                blend = blends[0]
+                inputs = cmds.listConnections(blend+'.input[0].inputGeometry',s=True,d=False,shapes=True) or []
+                if len(inputs) != 1 or cmds.nodeType(inputs[0]) != 'mesh':
+                    raise ValueError('Morph base geometry changed: '+shape)
+                base_fn = _fn(inputs[0])
+                if not _close([cmds.getAttr(blend+'.envelope')],[1]):
+                    raise ValueError('Morph envelope changed')
+                if len(cmds.getAttr(blend+'.weight',multiIndices=True) or []) != len(morph):
+                    raise ValueError('Morph target count changed')
+                for wi,target in enumerate(morph):
+                    incoming = cmds.listConnections(blend+'.weight[%d]' % wi,s=True,d=False,plugs=True) or []
+                    if incoming != [transform+'.glbMorphWeight%d' % wi] and incoming != [transform.split('|')[-1]+'.glbMorphWeight%d' % wi]:
+                        raise ValueError('Morph weight driver changed')
+                    prefix = blend+'.inputTarget[0].inputTargetGroup[%d].inputTargetItem[6000]' % wi
+                    if cmds.listConnections(prefix+'.inputGeomTarget',s=True,d=False):
+                        raise ValueError('Live morph target edits are not supported')
+                    points = cmds.getAttr(prefix+'.inputPointsTarget') or []
+                    components = cmds.getAttr(prefix+'.inputComponentsTarget') or []
+                    ids = []
+                    for component in components:
+                        match = re.fullmatch(r'vtx\[(\d+)(?::(\d+))?\]',component)
+                        if not match: raise ValueError('Unsupported morph component')
+                        ids.extend(range(int(match[1]),int(match[2] or match[1])+1))
+                    if len(ids) != len(points): raise ValueError('Invalid morph target storage')
+                    actual = {i:tuple(p)[:3] for i,p in zip(ids,points)}
+                    expected = source.accessor(target['POSITION']) if 'POSITION' in target else [(0,0,0)]*len(positions)
+                    if any(not _close(actual.get(i,(0,0,0)),delta) for i,delta in enumerate(expected)):
+                        raise ValueError('Morph target edited: '+shape)
+                fn_geometry = base_fn
+            else:
+                fn_geometry = fn
+            if fn_geometry.numVertices != len(positions) or any(not _close(tuple(p)[:3], v) for p,v in zip(fn_geometry.getPoints(), positions)):
                 raise ValueError('Geometry edited: '+shape)
             indices = [r[0] for r in source.accessor(primitive['indices'])] if 'indices' in primitive else list(range(len(positions)))
             if primitive.get('mode',4) != 4:
@@ -118,7 +154,7 @@ def export_imported_glb(path, root=None):
             if any(c != 3 for c in counts) or list(vertex_ids) != indices:
                 raise ValueError('Mesh topology edited: '+shape)
             checks['meshes'] += 1; checks['vertices'] += fn.numVertices; checks['triangles'] += fn.numPolygons
-            if 'NORMAL' in attrs:
+            if 'NORMAL' in attrs and not morph:
                 normals = source.accessor(attrs['NORMAL'])
                 ids = fn.getNormalIds()[1]; actual = fn.getNormals()
                 for corner, vertex in enumerate(vertex_ids):
@@ -147,7 +183,9 @@ def export_imported_glb(path, root=None):
             group = om.MFnDependencyNode(groups[assignments[0]]).name()
             shader = (cmds.listConnections(group+'.surfaceShader',s=True,d=False) or [None])[0]
             material_index = primitive.get('material')
-            if material_index is None or not shader:
+            if material_index is None:
+                continue
+            if not shader:
                 raise ValueError('Source/Maya material missing: '+shape)
             if material_index in shader_map and shader_map[material_index] != shader:
                 raise ValueError('Shared material split in Maya; source export needs an explicit remap')
@@ -173,18 +211,25 @@ def export_imported_glb(path, root=None):
             target = channel['target']; index,path_ = target['node'],target['path']
             node = node_map[index]
             sampler = animation['samplers'][channel['sampler']]
-            if sampler.get('interpolation','LINEAR') != 'STEP':
+            interpolation = sampler.get('interpolation','LINEAR')
+            if interpolation != 'STEP' and not (path_ == 'weights' and interpolation == 'LINEAR'):
                 raise ValueError('Lossless source animation verification currently supports STEP clips')
             times = [r[0] for r in source.accessor(sampler['input'])]
             values = source.accessor(sampler['output'])
-            prefix = {'translation':'translate','rotation':'rotate','scale':'scale'}[path_]
+            if path_ == 'weights':
+                count = len(doc['meshes'][doc['nodes'][index]['mesh']]['primitives'][0]['targets'])
+                values = [tuple(row[0] for row in values[i:i+count]) for i in range(0,len(values),count)]
+                attributes = ['glbMorphWeight%d' % i for i in range(count)]
+            else:
+                prefix = {'translation':'translate','rotation':'rotate','scale':'scale'}[path_]
+                attributes = [prefix+axis for axis in 'XYZ']
             key = (index,path_)
             if key not in curves:
-                curves[key] = [_curve(node,prefix+axis) for axis in 'XYZ']
+                curves[key] = [_curve(node,attribute) for attribute in attributes]
             for n,(t,expected) in enumerate(zip(times,values)):
                 # Evaluate just inside the STEP plateau to avoid Maya's saved
                 # key-time tick rounding at the discontinuity itself.
-                probe = t + min(1e-5,(times[n+1]-t)/4) if n+1 < len(times) else t+1e-5
+                probe = t if interpolation == 'LINEAR' else (t + min(1e-5,(times[n+1]-t)/4) if n+1 < len(times) else t+1e-5)
                 mt = om.MTime(clip['start']+probe*fps,om.MTime.uiUnit())
                 actual = [fn.evaluate(mt) for fn in curves[key]]
                 if path_ == 'rotation':
@@ -196,8 +241,9 @@ def export_imported_glb(path, root=None):
                 if n+1 < len(times):
                     mid = om.MTime(clip['start']+(t+times[n+1])/2*fps,om.MTime.uiUnit())
                     midpoint = [fn.evaluate(mid) for fn in curves[key]]
-                    if not _close(midpoint,actual,1e-6):
-                        raise ValueError('STEP interpolation changed: '+node)
+                    expected_mid = [(a+b)/2 for a,b in zip(expected,values[n+1])] if interpolation == 'LINEAR' else actual
+                    if not _close(midpoint,expected_mid,1e-6):
+                        raise ValueError('Animation interpolation changed: '+node)
                 checks['animation_samples'] += 1
 
     binary = bytearray(source.buffers[0][:doc['buffers'][0]['byteLength']])
@@ -289,6 +335,6 @@ def export_imported_glb(path, root=None):
     finally:
         if os.path.exists(temporary): os.unlink(temporary)
     return {'path':path,'source':source_path,'checks':checks,'clips':len(doc.get('animations',[])),
-            'hierarchy_nodes':len(nodes),'skins':len(doc.get('skins',[])), 'materials':len(doc['materials']),
+            'hierarchy_nodes':len(nodes),'skins':len(doc.get('skins',[])), 'materials':len(doc.get('materials',[])),
             'embedded_images':len(doc.get('images',[])), 'material_changes':material_changes,
             'sha256':hashlib.sha256(payload).hexdigest()}
