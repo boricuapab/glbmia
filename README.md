@@ -1,6 +1,6 @@
 # GLBMIA — Maya GLB import/export
 
-Standalone Python plug-in, tested with Maya 2023. No pip packages or Blender required.
+Standalone Python plug-in for Maya. No pip packages or Blender required.
 
 ## Install
 
